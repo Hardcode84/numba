@@ -30,15 +30,10 @@ Implement parallel vectorize workqueue on top of Intel TBB.
 #error "TBB version is too old, 2019 update 5, i.e. TBB_INTERFACE_VERSION >= 11005 required"
 #endif
 
-#define TSI_INIT(count) tbb::task_scheduler_init(count)
-#define TSI_TERMINATE(tsi) tsi->blocking_terminate(std::nothrow)
-
 #define _DEBUG 0
 #define _TRACE_SPLIT 0
 
 static tbb::task_group *tg = NULL;
-static tbb::task_scheduler_init *tsi = NULL;
-static int tsi_count = 0;
 
 #ifdef _MSC_VER
 #define THREAD_LOCAL(ty) __declspec(thread) ty
@@ -77,7 +72,7 @@ get_num_threads(void)
 static int
 get_thread_id(void)
 {
-    return tbb::task_arena::current_thread_index();
+    return tbb::this_task_arena::current_thread_index();
 }
 
 // watch the arena, if it decides to create more threads/add threads into the
@@ -202,11 +197,6 @@ parallel_for(void *fn, char **args, size_t *dimensions, size_t *steps, void *dat
     });
 }
 
-void ignore_blocking_terminate_assertion( const char*, int, const char*, const char * )
-{
-    tbb::internal::runtime_warning("Unable to wait for threads to shut down before fork(). It can break multithreading in child process\n");
-}
-
 void ignore_assertion( const char*, int, const char*, const char * ) {}
 
 static void prepare_fork(void)
@@ -214,12 +204,6 @@ static void prepare_fork(void)
     if(_DEBUG)
     {
         puts("Suspending TBB: prepare fork");
-    }
-    if(tsi)
-    {
-        assertion_handler_type orig = tbb::set_assertion_handler(ignore_blocking_terminate_assertion);
-        TSI_TERMINATE(tsi);
-        tbb::set_assertion_handler(orig);
     }
 }
 
@@ -229,40 +213,24 @@ static void reset_after_fork(void)
     {
         puts("Resuming TBB: after fork");
     }
-    if(tsi)
-        tsi->initialize(tsi_count);
 }
 
 #if PY_MAJOR_VERSION >= 3
 static void unload_tbb(void)
 {
-    if(tsi)
+    if(_DEBUG)
     {
-        if(_DEBUG)
-        {
-            puts("Unloading TBB");
-        }
-        tg->wait();
-        delete tg;
-        tg = NULL;
-        assertion_handler_type orig = tbb::set_assertion_handler(ignore_assertion);
-        tsi->terminate(); // no blocking terminate is needed here
-        tbb::set_assertion_handler(orig);
-        delete tsi;
-        tsi = NULL;
+        puts("Unloading TBB");
     }
 }
 #endif
 
 static void launch_threads(int count)
 {
-    if(tsi)
-        return;
     if(_DEBUG)
         puts("Using TBB");
     if(count < 1)
-        count = tbb::task_scheduler_init::automatic;
-    tsi = new TSI_INIT(tsi_count = count);
+        count = tbb::task_arena::automatic;
     tg = new tbb::task_group;
     tg->run([] {}); // start creating threads asynchronously
 
